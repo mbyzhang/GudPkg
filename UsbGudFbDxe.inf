@@ -1,0 +1,41 @@
+# SimpleFbDxe.inf: Implements Simple FrameBuffer in UEFI.
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = UsbGudFbDxe
+  FILE_GUID                      = 1b5e6e9c-d218-4b01-9c75-3331840f8ce0
+  MODULE_TYPE                    = DXE_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = UsbGudFbDriverEntryPoint
+
+[Sources]
+  GudDriver.c
+  GudDriver.h
+  GudDrm.h
+  UsbGudFb.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  ReportStatusCodeLib
+  UefiLib
+  UefiBootServicesTableLib
+  UefiDriverEntryPoint
+  MemoryAllocationLib
+  BaseMemoryLib
+  DebugLib
+  UefiUsbLib
+  PcdLib
+
+[Protocols]
+  gEfiUsbIoProtocolGuid
+  gEfiGraphicsOutputProtocolGuid ## PRODUCES
+
+[Depex]
+  TRUE
+
+[Pcd]
+  gEfiMdePkgTokenSpaceGuid.PcdUsbTransferTimeoutValue
