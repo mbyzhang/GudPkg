@@ -18,6 +18,7 @@
 #include <IndustryStandard/Usb.h>
 
 #include "GudDriver.h"
+#include "Lz4.h"
 
 #define GUD_INTERFACE L"GUD USB Display"
 
@@ -600,12 +601,6 @@ GudInit (
   ));
 
   //
-  // Allocate transfer buffer
-  //
-  GudDev->TransferBuffer = AllocatePool(GudDev->VendorDescriptor.MaxBufferSize);
-  ASSERT (GudDev->TransferBuffer);
-
-  //
   // Enable GUD controller
   //
   Status = GudSetControllerEnable (GudDev, TRUE);
@@ -701,6 +696,17 @@ GudInit (
 
   // DEBUG((DEBUG_INFO,"UsbGudFbDriver: using mode %dx%d\n", GudDev->Modes[GudDev->ModeIndex].HDisplay, GudDev->Modes[GudDev->ModeIndex].VDisplay));
 
+  //
+  // Allocate transfer buffer
+  //
+  GudDev->TransferBuffer = AllocatePool(GudDev->VendorDescriptor.MaxBufferSize);
+  ASSERT (GudDev->TransferBuffer);
+
+  if (GudDev->VendorDescriptor.Compression) {
+    GudDev->TransferBufferCompressed = AllocatePool(GudDev->VendorDescriptor.MaxBufferSize);
+    ASSERT (GudDev->TransferBufferCompressed);
+  }
+
 ErrorExit:
   return Status;
 }
@@ -755,7 +761,7 @@ GudFlushPart(
   )
 {
   EFI_STATUS Status;
-  UINTN BufferSize = Width * Height * USB_GUD_BPP;
+  UINTN RawBufferSize = Width * Height * USB_GUD_BPP;
   UINTN LineSize = Width * USB_GUD_BPP;
   UINTN Index;
   UINT32 UsbStatus;
@@ -767,16 +773,36 @@ GudFlushPart(
     CopyMem(GudDev->TransferBuffer + LineSize * Index, Base, LineSize);
   }
 
+  UINT8 *Buffer = GudDev->TransferBuffer;
+  UINTN BufferSize = RawBufferSize;
+  UINTN BufferSizeCompressed;
+  BOOLEAN Compressed = FALSE;
+
+  if (GudDev->VendorDescriptor.Compression & GUD_COMPRESSION_LZ4) {
+    Status = Lz4Compress(
+      GudDev->TransferBuffer,
+      RawBufferSize,
+      GudDev->TransferBufferCompressed,
+      GudDev->VendorDescriptor.MaxBufferSize,
+      &BufferSizeCompressed
+    );
+
+    if (Status == EFI_SUCCESS) {
+      Buffer = GudDev->TransferBufferCompressed;
+      BufferSize = BufferSizeCompressed;
+      Compressed = TRUE;
+    }
+  }
+
   if (!(GudDev->VendorDescriptor.Flags & GUD_DISPLAY_FLAG_FULL_UPDATE)) {
-    // TODO: compression
     GUD_DRM_REQ_SET_BUFFER SetBufferReq = {
       .X = X,
       .Y = Y,
       .Height = Height,
       .Width = Width,
-      .Length = BufferSize,
-      .Compression = 0,
-      .CompressedLength = 0
+      .Length = RawBufferSize,
+      .Compression = (Compressed)? GUD_COMPRESSION_LZ4 : 0,
+      .CompressedLength = (Compressed)? BufferSize : 0
     };
 
     Status = GudSetBuffer(
@@ -792,11 +818,12 @@ GudFlushPart(
     DEBUG((DEBUG_INFO,"UsbGudFbDriver: set buffer ok\n"));
   }
 
+
   UINTN BytesTransferred = BufferSize;
   Status = GudDev->UsbIo->UsbBulkTransfer(
     GudDev->UsbIo,
     GudDev->BulkEndpointDescriptor.EndpointAddress,
-    GudDev->TransferBuffer,
+    Buffer,
     &BytesTransferred,
     PcdGet32 (PcdUsbTransferTimeoutValue),
     &UsbStatus
@@ -843,7 +870,7 @@ ErrorExit:
 }
 
 
-EFI_STATUS
+VOID
 GudQueueFlush(
     IN OUT USB_GUD_FB_DEV *GudDev,
     IN UINTN X,
@@ -852,5 +879,80 @@ GudQueueFlush(
     IN UINTN Height
   )
 {
-  return EFI_SUCCESS;
+  if (GudDev->FrameBufferDirty) {
+    UINTN OldRight  = GudDev->FrameBufferDamagedX + GudDev->FrameBufferDamagedWidth;
+    UINTN OldBottom = GudDev->FrameBufferDamagedY + GudDev->FrameBufferDamagedHeight;
+
+    GudDev->FrameBufferDamagedX = MIN(GudDev->FrameBufferDamagedX, X);
+    GudDev->FrameBufferDamagedY = MIN(GudDev->FrameBufferDamagedY, Y);
+
+    UINTN NewRight = MAX(OldRight, X + Width);
+    UINTN NewBottom = MAX(OldBottom, Y + Height);
+
+    GudDev->FrameBufferDamagedWidth = NewRight - GudDev->FrameBufferDamagedX;
+    GudDev->FrameBufferDamagedHeight = NewBottom - GudDev->FrameBufferDamagedY;
+  }
+  else {
+    GudDev->FrameBufferDirty = TRUE;
+    GudDev->FrameBufferDamagedX = X;
+    GudDev->FrameBufferDamagedY = Y;
+    GudDev->FrameBufferDamagedWidth = Width;
+    GudDev->FrameBufferDamagedHeight = Height;
+  }
+}
+
+
+VOID
+EFIAPI
+GudFlushTimerCallback(
+    IN EFI_EVENT  Event,
+    IN VOID *Context
+  )
+{
+  DEBUG((DEBUG_ERROR, "UsbGudFbDriver: polling timer fired\n"));
+  USB_GUD_FB_DEV *GudDev = (USB_GUD_FB_DEV*)Context;
+  EFI_STATUS Status;
+  if (GudDev->FrameBufferDirty) {
+    GudDev->FrameBufferDirty = FALSE;
+    Status = GudFlush(
+      GudDev, 
+      GudDev->FrameBufferDamagedX, 
+      GudDev->FrameBufferDamagedY, 
+      GudDev->FrameBufferDamagedWidth, 
+      GudDev->FrameBufferDamagedHeight
+    );
+
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_ERROR, "UsbGudFbDriver: failed to flush\n"));
+    }
+  }
+}
+
+EFI_STATUS
+GudStartPolling(
+    IN OUT USB_GUD_FB_DEV *GudDev
+  )
+{
+  EFI_STATUS Status;
+  Status = gBS->CreateEvent (
+                  EVT_TIMER | EVT_NOTIFY_SIGNAL,  // Type
+                  TPL_NOTIFY,                     // NotifyTpl
+                  GudFlushTimerCallback,          // NotifyFunction
+                  GudDev,                         // NotifyContext
+                  &GudDev->PollingTimer           // Event
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = gBS->SetTimer (
+                  GudDev->PollingTimer,
+                  TimerPeriodic,
+                  EFI_TIMER_PERIOD_MILLISECONDS (100)
+                  );
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  return Status;
 }

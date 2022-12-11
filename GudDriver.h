@@ -34,11 +34,21 @@ typedef struct {
 
   UINTN                         FrameBufferSize;
   UINT8                         *FrameBufferBase;
+  BOOLEAN                       FrameBufferDirty;
+  UINTN                         FrameBufferDamagedX;
+  UINTN                         FrameBufferDamagedY;
+  UINTN                         FrameBufferDamagedWidth;
+  UINTN                         FrameBufferDamagedHeight;
+
   UINTN                         FrameBufferBltConfigureSize;
   FRAME_BUFFER_CONFIGURE        *FrameBufferBltConfigure;
+
   EFI_HANDLE                    GopHandle;
   UINT8                         *TransferBuffer;
+  UINT8                         *TransferBufferCompressed;
   EFI_DEVICE_PATH               *GopDevicePath;
+
+  EFI_EVENT                     PollingTimer;
 } USB_GUD_FB_DEV;
 
 #define USB_GUD_FROM_GOP(This) CR(This, USB_GUD_FB_DEV, Gop, USB_GUD_FB_DEV_SIGNATURE)
@@ -67,6 +77,20 @@ EFI_STATUS
 GudSetMode (
   IN OUT USB_GUD_FB_DEV *GudDev,
   IN UINT8 ModeIndex
+);
+
+VOID
+GudQueueFlush(
+  IN OUT USB_GUD_FB_DEV *GudDev,
+  IN UINTN X,
+  IN UINTN Y,
+  IN UINTN Width,
+  IN UINTN Height
+);
+
+EFI_STATUS
+GudStartPolling(
+  IN OUT USB_GUD_FB_DEV *GudDev
 );
 
 #endif

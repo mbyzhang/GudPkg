@@ -9,6 +9,9 @@
   ENTRY_POINT                    = UsbGudFbDriverEntryPoint
 
 [Sources]
+  lz4/lz4.c
+  lz4/lz4.h
+  Lz4.h
   GudDriver.c
   GudDriver.h
   GudDrm.h

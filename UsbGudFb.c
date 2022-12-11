@@ -99,13 +99,16 @@ GopSetMode
 )
 {
   DEBUG((DEBUG_INFO, "UsbGudFbDriver: GopSetMode called\n"));
-
+  EFI_TPL OldTpl;
   EFI_STATUS Status;
   USB_GUD_FB_DEV *GudDev = USB_GUD_FROM_GOP(This);
   EFI_GRAPHICS_OUTPUT_MODE_INFORMATION *GopInfo = GudDev->Gop.Mode->Info;
 
+  OldTpl = gBS->RaiseTPL(TPL_NOTIFY);
+
   if (ModeNumber >= GudDev->ModeCount) {
-    return EFI_INVALID_PARAMETER;
+    Status = EFI_INVALID_PARAMETER;
+    goto ErrorExit;
   }
 
   Status = GudSetMode(GudDev, ModeNumber);
@@ -116,15 +119,18 @@ GopSetMode
 
   GopModeInfoFromGudMode(&GudDev->Modes[GudDev->ModeIndex], GopInfo);
 
-  GudDev->FrameBufferSize = USB_GUD_BPP * GopInfo->HorizontalResolution * GopInfo->VerticalResolution;
 
   if (GudDev->FrameBufferBase) {
     FreePool(GudDev->FrameBufferBase);
     GudDev->FrameBufferBase = NULL;
   }
 
-  GudDev->FrameBufferBase = AllocateZeroPool(GudDev->FrameBufferSize);
+  GudDev->FrameBufferSize = USB_GUD_BPP * GopInfo->HorizontalResolution * GopInfo->VerticalResolution;
+
+  GudDev->FrameBufferBase = AllocatePool(GudDev->FrameBufferSize);
   ASSERT (GudDev->FrameBufferBase);
+
+  GudDev->FrameBufferDirty = FALSE;
 
   // DEBUG((DEBUG_INFO, "UsbGudFbDriver: size %dx%d\n", GopInfo->HorizontalResolution, GopInfo->VerticalResolution));
 
@@ -183,12 +189,14 @@ GopSetMode
 
   ASSERT_RETURN_ERROR (Status);
 
+  gBS->RestoreTPL(OldTpl);
   return Status;
 ErrorExit2:
   FreePool(GudDev->FrameBufferBase);
   GudDev->FrameBufferBase = NULL;
 
 ErrorExit:
+  gBS->RestoreTPL(OldTpl);
   return Status;
 }
 
@@ -211,6 +219,9 @@ GopBlt(
   DEBUG((DEBUG_INFO, "UsbGudFbDriver: GopBlt called\n"));
   EFI_STATUS Status;
   USB_GUD_FB_DEV *GudDev = USB_GUD_FROM_GOP(This);
+  EFI_TPL                      OldTpl;
+
+  OldTpl = gBS->RaiseTPL(TPL_NOTIFY);
 
   Status = FrameBufferBlt (
     GudDev->FrameBufferBltConfigure,
@@ -226,14 +237,19 @@ GopBlt(
   );
 
   if (Status == EFI_SUCCESS && BltOperation != EfiBltVideoToBltBuffer) {
+#if 0
     Status = GudFlush(GudDev, DestinationX, DestinationY, Width, Height);
     if (EFI_ERROR(Status)) {
       DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to flush buffer\n"));
       goto ErrorExit;
     }
+#else
+    GudQueueFlush(GudDev, DestinationX, DestinationY, Width, Height);
+#endif
   }
 
-ErrorExit:
+// ErrorExit:
+  gBS->RestoreTPL(OldTpl);
   return Status;
 }
 
@@ -372,6 +388,9 @@ UsbGudFbDriverBindingStart (
 
   DEBUG((DEBUG_INFO, "UsbGudFbDriver: GOP initialized\n"));
 
+  //
+  // Update ConOut UEFI variable
+  //
   Status = EfiBootManagerUpdateConsoleVariable (ConOut, GudDev->GopDevicePath, NULL);
 
   if (EFI_ERROR (Status)) {
@@ -384,6 +403,16 @@ UsbGudFbDriverBindingStart (
   if (EFI_ERROR (Status)) {
     DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to connect controller\n"));
     Status = EFI_SUCCESS;
+  }
+
+  //
+  // Start GUD polling timer
+  //
+  Status = GudStartPolling(GudDev);
+
+  if (EFI_ERROR (Status)) {
+    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to start polling\n"));
+    goto ErrorExit3;
   }
 
   gBS->RestoreTPL (OldTpl);
