@@ -28,10 +28,14 @@
   BaseMemoryLib
   DebugLib
   UefiUsbLib
+  FrameBufferBltLib
   PcdLib
+  DevicePathLib
+  UefiBootManagerLib
 
 [Protocols]
   gEfiUsbIoProtocolGuid
+  gEfiDevicePathProtocolGuid
   gEfiGraphicsOutputProtocolGuid ## PRODUCES
 
 [Depex]

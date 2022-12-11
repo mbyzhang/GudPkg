@@ -61,7 +61,7 @@ GudSendControlMessage (
     &LocalUsbStatus
   );
 
-  // Print(L"UsbGudFbDriver: usb result = 0x%08x\n", LocalUsbStatus);
+  // DEBUG((DEBUG_INFO,"UsbGudFbDriver: usb result = 0x%08x\n", LocalUsbStatus));
 
   if (UsbStatus) {
     *UsbStatus = LocalUsbStatus;
@@ -127,12 +127,12 @@ GudUsbTransfer (
 
   if (EFI_ERROR(Status)) {
     if (Status == EFI_DEVICE_ERROR && (UsbStatus & EFI_USB_ERR_STALL) == EFI_USB_ERR_STALL) {
-      // Print(L"UsbGudFbDriver: stalled\n");
+      // DEBUG((DEBUG_INFO,"UsbGudFbDriver: stalled\n");
       Stall = TRUE;
     }
     else {
-      // Print(L"UsbGudFbDriver: error: %d\n", Status);
-      // Print(L"UsbGudFbDriver: got other usb transfer result: 0x%08x\n", UsbStatus);
+      // DEBUG((DEBUG_INFO,"UsbGudFbDriver: error: %d\n", Status);
+      // DEBUG((DEBUG_INFO,"UsbGudFbDriver: got other usb transfer result: 0x%08x\n", UsbStatus);
       goto ErrorExit;
     }
   }
@@ -141,19 +141,19 @@ GudUsbTransfer (
   {
     Status = GudGetStatus(GudDev, &LocalGudStatus, NULL);
     if (EFI_ERROR (Status)) {
-      Print(L"UsbGudFbDriver: failed to get gud status\n");
+      DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to get gud status\n"));
       goto ErrorExit;
     }
 
     if (Stall && LocalGudStatus == GUD_STATUS_OK) {
-      Print(L"UsbGudFbDriver: unexpected OK status on stall\n");
+      DEBUG((DEBUG_INFO,"UsbGudFbDriver: unexpected OK status on stall\n"));
       Status = EFI_DEVICE_ERROR;
       goto ErrorExit;
     }
 
     if (LocalGudStatus) {
       Status = EFI_DEVICE_ERROR;
-      Print(L"UsbGudFbDriver: got gud status %d from device\n", LocalGudStatus);
+      DEBUG((DEBUG_INFO,"UsbGudFbDriver: got gud status %d from device\n", LocalGudStatus));
     }
   }
 
@@ -330,7 +330,7 @@ GudGetDescriptor(
 
   if (Descriptor->Magic != GUD_DISPLAY_MAGIC)
   {
-    Print(L"UsbGudFbDriver: unexpected magic %x\n", Descriptor->Magic);
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: unexpected magic %x\n", Descriptor->Magic));
     Status = EFI_DEVICE_ERROR;
     goto ErrorExit;
   }
@@ -338,9 +338,13 @@ GudGetDescriptor(
   if (Descriptor->Version == 0 || Descriptor->MaxWidth == 0 || Descriptor->MaxHeight == 0 || 
       Descriptor->MinWidth > Descriptor->MaxWidth || Descriptor->MinHeight > Descriptor->MaxHeight)
   {
-    Print(L"UsbGudFbDriver: bad descriptor\n");
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: bad descriptor\n"));
     Status = EFI_DEVICE_ERROR;
     goto ErrorExit;
+  }
+
+  if (Descriptor->MaxBufferSize == 0 || Descriptor->MaxBufferSize > USB_GUD_MAX_BUFFER_SIZE) {
+    Descriptor->MaxBufferSize = USB_GUD_MAX_BUFFER_SIZE;
   }
 
 ErrorExit:
@@ -465,13 +469,79 @@ GudSetStateCommit (
 }
 
 EFI_STATUS
+GudSetBuffer (
+    IN OUT USB_GUD_FB_DEV *GudDev,
+    IN GUD_DRM_REQ_SET_BUFFER *Req,
+    OUT UINT8 *GudStatus OPTIONAL
+  )
+{
+  return GudUsbTransfer(
+    GudDev,
+    EfiUsbDataOut,
+    GUD_REQ_SET_BUFFER,
+    0,
+    (UINT8*)Req,
+    sizeof(GUD_DRM_REQ_SET_BUFFER),
+    GudStatus
+  );
+}
+
+EFI_STATUS
+GudSetMode (
+    IN OUT USB_GUD_FB_DEV *GudDev,
+    IN UINT8 ModeIndex
+  )
+{
+  EFI_STATUS Status;
+  UINT8 Index;
+  GUD_DRM_REQ_SET_STATE *State;
+  UINT8 PropertyCount = GudDev->PropertyCount;
+  UINT8 ConnectorPropertyCount = GudDev->ConnectorPropertyCount;
+
+  GudDev->ModeIndex = ModeIndex;
+
+  UINTN StateSize = sizeof(GUD_DRM_REQ_SET_STATE) + sizeof(GUD_DRM_REQ_PROPERTY) * (PropertyCount + ConnectorPropertyCount);
+  State = AllocateZeroPool(StateSize);
+
+  State->Connector = 0;
+  State->Mode = GudDev->Modes[GudDev->ModeIndex];
+  State->Format = GUD_PIXEL_FORMAT_XRGB8888;
+
+  for (Index = 0; Index < PropertyCount + ConnectorPropertyCount; Index++) {
+    if (Index < PropertyCount) {
+      State->Properties[Index] = GudDev->Properties[Index];
+    }
+    else {
+      State->Properties[Index] = GudDev->ConnectorProperties[Index - PropertyCount];
+    }
+  }
+
+  Status = GudSetStateCheck(GudDev, State, NULL);
+
+  if (EFI_ERROR (Status)) {
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to set state check\n"));
+    goto ErrorExit1;
+  }
+
+  Status = GudSetStateCommit(GudDev, NULL);
+
+  if (EFI_ERROR (Status)) {
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to set state commit\n"));
+    goto ErrorExit1;
+  }
+
+ErrorExit1:
+  FreePool(State);
+  return Status;
+}
+
+EFI_STATUS
 GudInit (
     IN OUT USB_GUD_FB_DEV *GudDev
   )
 {
   EFI_STATUS Status;
   UINT8 ConnectorIndex = 0;
-  UINT8 Index;
   EFI_USB_IO_PROTOCOL *UsbIo = GudDev->UsbIo;
   EFI_USB_ENDPOINT_DESCRIPTOR  EndpointDescriptor;
 
@@ -516,17 +586,24 @@ GudInit (
   Status = GudGetDescriptor (GudDev, &GudDev->VendorDescriptor);
   if (EFI_ERROR (Status)) 
   {
-    Print(L"UsbGudFbDriver: failed to get descriptor\n");
+    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to get descriptor\n"));
     goto ErrorExit;
   }
 
-  Print (
-    L"UsbGudFbDriver: supported framebuffer size: %dx%d to %dx%d\n", 
+  DEBUG ((
+    DEBUG_INFO,
+    "UsbGudFbDriver: supported framebuffer size: %dx%d to %dx%d\n", 
     GudDev->VendorDescriptor.MinWidth,
     GudDev->VendorDescriptor.MinHeight,
     GudDev->VendorDescriptor.MaxWidth,
     GudDev->VendorDescriptor.MaxHeight
-  );
+  ));
+
+  //
+  // Allocate transfer buffer
+  //
+  GudDev->TransferBuffer = AllocatePool(GudDev->VendorDescriptor.MaxBufferSize);
+  ASSERT (GudDev->TransferBuffer);
 
   //
   // Enable GUD controller
@@ -537,26 +614,23 @@ GudInit (
     goto ErrorExit;
   }
   
-  Print(L"UsbGudFbDriver: controller enabled\n");
+  DEBUG((DEBUG_INFO,"UsbGudFbDriver: controller enabled\n"));
 
   //
   // Get all connectors
   //
-  UINT8 ConnectorCount;
-  GUD_DRM_REQ_CONNECTOR_DESCRIPTOR Connectors[GUD_CONNECTORS_MAX_NUM];
-  Status = GudGetConnectors(GudDev, Connectors, &ConnectorCount, NULL);
+  Status = GudGetConnectors(GudDev, GudDev->Connectors, &GudDev->ConnectorCount, NULL);
 
   if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to get connectors\n");
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to get connectors\n"));
     goto ErrorExit;
   }
 
-  Print(L"UsbGudFbDriver: %d connectors detected\n", ConnectorCount);
-
+  DEBUG((DEBUG_INFO,"UsbGudFbDriver: %d connectors detected\n", GudDev->ConnectorCount));
   
-  for (Index = 0; Index < ConnectorCount; Index++) {
-    Print(L"UsbGudFbDriver: Con%d\ttype: 0x%02x\tflags: 0x%08x\n", Index, Connectors[Index].ConnectorType, Connectors[Index].Flags);
-  }
+  // for (Index = 0; Index < ConnectorCount; Index++) {
+  //   DEBUG((DEBUG_INFO,"UsbGudFbDriver: Con%d\ttype: 0x%02x\tflags: 0x%08x\n", Index, Connectors[Index].ConnectorType, Connectors[Index].Flags);
+  // }
 
   //
   // Check connector status
@@ -565,107 +639,67 @@ GudInit (
   Status = GudGetU8(GudDev, GUD_REQ_GET_CONNECTOR_STATUS, ConnectorIndex, &ConnectorStatus, NULL);
 
   if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to get connector status\n");
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to get connector status\n"));
     goto ErrorExit;
   }
 
   if ((ConnectorStatus & GUD_CONNECTOR_STATUS_CONNECTED_MASK) != GUD_CONNECTOR_STATUS_CONNECTED) {
-    Print(L"UsbGudFbDriver: no display connected to connector %d\n", ConnectorIndex);
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: no display connected to connector %d\n", ConnectorIndex));
     goto ErrorExit;
   }
 
   //
   // Get connector modes
   //
-  UINT8 ModesCount;
-
-  GUD_DRM_REQ_DISPLAY_MODE Modes[GUD_CONNECTOR_MAX_NUM_MODES];
-
-  Status = GudGetConnectorModes(GudDev, ConnectorIndex, Modes, &ModesCount, NULL);
+  Status = GudGetConnectorModes(GudDev, ConnectorIndex, GudDev->Modes, &GudDev->ModeCount, NULL);
   
   if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to get connector modes\n");
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to get connector modes\n"));
     goto ErrorExit;
   }
 
-  Print(L"UsbGudFbDriver: Con%d has %d modes\n", ConnectorIndex, ModesCount);
+  DEBUG((DEBUG_INFO,"UsbGudFbDriver: Con%d has %d modes\n", ConnectorIndex, GudDev->ModeCount));
 
   // for (Index = 0; Index < ModesCount; Index++) {
-  //   Print(L"UsbGudFbDriver: Mode%d\t%dx%d\tflags: 0x%08x\n", Index, Modes[Index].HDisplay, Modes[Index].VDisplay, Modes[Index].Flags);
+  //   DEBUG((DEBUG_INFO,"UsbGudFbDriver: Mode%d\t%dx%d\tflags: 0x%08x\n", Index, Modes[Index].HDisplay, Modes[Index].VDisplay, Modes[Index].Flags);
   // }
 
   // GudDev->State.Mode = Modes[0];
-
-  Print(L"UsbGudFbDriver: using mode %dx%d\n", Modes[0].HDisplay, Modes[0].VDisplay);
 
   // TODO: get formats
   
   //
   // Get properties
   //
-  UINT8 PropertyCount;
-  GUD_DRM_REQ_PROPERTY Properties[GUD_PROPERTIES_MAX_NUM];
-  UINT8 GudStatus;
-
-  Status = GudGetProperties(GudDev, Properties, &PropertyCount, &GudStatus);
+  Status = GudGetProperties(GudDev, GudDev->Properties, &GudDev->PropertyCount, NULL);
   
   if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to get properties, assuming no properties\n");
-    PropertyCount = 0;
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to get properties, assuming no properties\n"));
+    GudDev->PropertyCount = 0;
+    Status = EFI_SUCCESS;
   }
 
   //
   // Get connector properties
   //
-  UINT8 ConnectorPropertyCount;
-  GUD_DRM_REQ_PROPERTY ConnectorProperties[GUD_CONNECTOR_PROPERTIES_MAX_NUM];
-
-  Status = GudGetConnectorProperties(GudDev, ConnectorIndex, Properties, &ConnectorPropertyCount, NULL);
+  Status = GudGetConnectorProperties(GudDev, ConnectorIndex, GudDev->Properties, &GudDev->ConnectorPropertyCount, NULL);
   
   if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to get connector properties, assuming no connector properties\n");
-    ConnectorPropertyCount = 0;
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to get connector properties, assuming no connector properties\n"));
+    GudDev->ConnectorPropertyCount = 0;
+    Status = EFI_SUCCESS;
   }
 
   //
   // Set state (mode/format)
   //
+  // Status = GudSetMode(GudDev, 0);
 
-  GUD_DRM_REQ_SET_STATE *State;
-  UINTN StateSize = sizeof(GUD_DRM_REQ_SET_STATE) + sizeof(GUD_DRM_REQ_PROPERTY) * (PropertyCount + ConnectorPropertyCount);
-  State = AllocateZeroPool(StateSize);
+  // if (EFI_ERROR (Status)) {
+  //   goto ErrorExit;
+  // }
 
-  State->Connector = 0;
-  State->Mode = Modes[0];
-  State->Format = GUD_PIXEL_FORMAT_XRGB8888;
-
-  for (Index = 0; Index < PropertyCount + ConnectorPropertyCount; Index++) {
-    if (Index < PropertyCount) {
-      State->Properties[Index] = Properties[Index];
-    }
-    else {
-      State->Properties[Index] = ConnectorProperties[Index - PropertyCount];
-    }
-  }
-
-  Print(L"UsbGudFbDriver: %d\n", State->Mode.HDisplay);
-
-  Status = GudSetStateCheck(GudDev, State, NULL);
-
-  if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to set state check\n");
-    goto ErrorExit1;
-  }
-
-  Status = GudSetStateCommit(GudDev, NULL);
-
-  if (EFI_ERROR (Status)) {
-    Print(L"UsbGudFbDriver: failed to set state commit\n");
-    goto ErrorExit1;
-  }
-
-ErrorExit1:
-  FreePool(State);
+  // DEBUG((DEBUG_INFO,"UsbGudFbDriver: using mode %dx%d\n", GudDev->Modes[GudDev->ModeIndex].HDisplay, GudDev->Modes[GudDev->ModeIndex].VDisplay));
 
 ErrorExit:
   return Status;
@@ -673,7 +707,7 @@ ErrorExit:
 
 BOOLEAN
 GudDetect(
-    EFI_USB_IO_PROTOCOL *UsbIo
+    IN OUT EFI_USB_IO_PROTOCOL *UsbIo
   )
 {
   EFI_STATUS Status;
@@ -709,4 +743,114 @@ GudDetect(
   else {
     return FALSE;
   }
+}
+
+EFI_STATUS
+GudFlushPart(
+    IN OUT USB_GUD_FB_DEV *GudDev,
+    IN UINTN X,
+    IN UINTN Y,
+    IN UINTN Width,
+    IN UINTN Height
+  )
+{
+  EFI_STATUS Status;
+  UINTN BufferSize = Width * Height * USB_GUD_BPP;
+  UINTN LineSize = Width * USB_GUD_BPP;
+  UINTN Index;
+  UINT32 UsbStatus;
+  DEBUG((DEBUG_INFO,"UsbGudFbDriver: flushing part %dx%d@%d,%d\n", Width, Height, X, Y));
+
+  for (Index = 0; Index < Height; Index++) {
+    UINTN CurrentY = Index + Y;
+    UINT8 *Base = USB_GUD_FB_AT(GudDev, X, CurrentY);
+    CopyMem(GudDev->TransferBuffer + LineSize * Index, Base, LineSize);
+  }
+
+  if (!(GudDev->VendorDescriptor.Flags & GUD_DISPLAY_FLAG_FULL_UPDATE)) {
+    // TODO: compression
+    GUD_DRM_REQ_SET_BUFFER SetBufferReq = {
+      .X = X,
+      .Y = Y,
+      .Height = Height,
+      .Width = Width,
+      .Length = BufferSize,
+      .Compression = 0,
+      .CompressedLength = 0
+    };
+
+    Status = GudSetBuffer(
+      GudDev,
+      &SetBufferReq,
+      NULL
+    );
+
+    if (EFI_ERROR(Status)) {
+      DEBUG((DEBUG_INFO,"UsbGudFbDriver: failed to set buffer\n"));
+      goto ErrorExit;
+    }
+    DEBUG((DEBUG_INFO,"UsbGudFbDriver: set buffer ok\n"));
+  }
+
+  UINTN BytesTransferred = BufferSize;
+  Status = GudDev->UsbIo->UsbBulkTransfer(
+    GudDev->UsbIo,
+    GudDev->BulkEndpointDescriptor.EndpointAddress,
+    GudDev->TransferBuffer,
+    &BytesTransferred,
+    PcdGet32 (PcdUsbTransferTimeoutValue),
+    &UsbStatus
+  );
+
+  DEBUG((DEBUG_INFO,"UsbGudFbDriver: bulk endpoint: %d\n", GudDev->BulkEndpointDescriptor.EndpointAddress));
+  DEBUG((DEBUG_INFO,"UsbGudFbDriver: bytes transferred: %d\n", BytesTransferred));
+
+ErrorExit:
+  return Status;
+}
+
+EFI_STATUS
+GudFlush(
+    IN OUT USB_GUD_FB_DEV *GudDev,
+    IN UINTN X,
+    IN UINTN Y,
+    IN UINTN Width,
+    IN UINTN Height
+  )
+{
+  EFI_STATUS Status;
+
+  if (GudDev->VendorDescriptor.Flags & GUD_DISPLAY_FLAG_FULL_UPDATE) {
+    X = 0;
+    Y = 0;
+    Width = GudDev->Modes[GudDev->ModeIndex].HDisplay;
+    Height = GudDev->Modes[GudDev->ModeIndex].VDisplay;
+  }
+
+  UINTN PartHeight = GudDev->VendorDescriptor.MaxBufferSize / (Width * USB_GUD_BPP);
+  ASSERT (PartHeight);
+  UINTN CurrentY;
+
+  for (CurrentY = Y; CurrentY < Y + Height; CurrentY += PartHeight) {
+    Status = GudFlushPart(GudDev, X, CurrentY, Width, MIN(PartHeight, Y + Height - CurrentY));
+    if (EFI_ERROR(Status)) {
+      goto ErrorExit;
+    }
+  }
+
+ErrorExit:
+  return Status;
+}
+
+
+EFI_STATUS
+GudQueueFlush(
+    IN OUT USB_GUD_FB_DEV *GudDev,
+    IN UINTN X,
+    IN UINTN Y,
+    IN UINTN Width,
+    IN UINTN Height
+  )
+{
+  return EFI_SUCCESS;
 }
