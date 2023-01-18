@@ -62,7 +62,7 @@ GopQueryMode
     OUT UINTN                                 *SizeOfInfo,
     OUT EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  **Info
 ) {
-  DEBUG((DEBUG_INFO, "UsbGudFbDriver: GopQueryMode called\n"));
+  Print(L"UsbGudFbDriver: GopQueryMode called\n");
 
   USB_GUD_FB_DEV *GudDev = USB_GUD_FROM_GOP(This);
   EFI_GRAPHICS_OUTPUT_MODE_INFORMATION  ModeInfo;
@@ -81,7 +81,7 @@ GopQueryMode
   );
 
   if (*Info == NULL) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: GopQueryMode: out of resources\n"));
+    Print(L"UsbGudFbDriver: GopQueryMode: out of resources\n");
     return EFI_OUT_OF_RESOURCES;
   }
 
@@ -98,7 +98,7 @@ GopSetMode
     IN  UINT32                       ModeNumber
 )
 {
-  DEBUG((DEBUG_INFO, "UsbGudFbDriver: GopSetMode called\n"));
+  Print(L"UsbGudFbDriver: GopSetMode called\n");
   EFI_TPL OldTpl;
   EFI_STATUS Status;
   USB_GUD_FB_DEV *GudDev = USB_GUD_FROM_GOP(This);
@@ -121,18 +121,18 @@ GopSetMode
 
 
   if (GudDev->FrameBufferBase) {
-    FreePool(GudDev->FrameBufferBase);
+    FreePages(GudDev->FrameBufferBase, EFI_SIZE_TO_PAGES(GudDev->FrameBufferSize));
     GudDev->FrameBufferBase = NULL;
   }
 
   GudDev->FrameBufferSize = USB_GUD_BPP * GopInfo->HorizontalResolution * GopInfo->VerticalResolution;
 
-  GudDev->FrameBufferBase = AllocatePool(GudDev->FrameBufferSize);
+  GudDev->FrameBufferBase = AllocatePages(EFI_SIZE_TO_PAGES(GudDev->FrameBufferSize));
   ASSERT (GudDev->FrameBufferBase);
 
   GudDev->FrameBufferDirty = FALSE;
 
-  // DEBUG((DEBUG_INFO, "UsbGudFbDriver: size %dx%d\n", GopInfo->HorizontalResolution, GopInfo->VerticalResolution));
+  // Print(L"UsbGudFbDriver: size %dx%d\n", GopInfo->HorizontalResolution, GopInfo->VerticalResolution);
 
   Status = FrameBufferBltConfigure (
     (VOID *)GudDev->FrameBufferBase,
@@ -150,7 +150,7 @@ GopSetMode
       AllocatePool (GudDev->FrameBufferBltConfigureSize);
     if (GudDev->FrameBufferBltConfigure == NULL) {
       GudDev->FrameBufferBltConfigureSize = 0;
-      DEBUG((DEBUG_INFO, "UsbGudFbDriver: Blt configuration failed: out of resources\n"));
+      Print(L"UsbGudFbDriver: Blt configuration failed: out of resources\n");
       Status = EFI_OUT_OF_RESOURCES;
       goto ErrorExit2;
     }
@@ -164,13 +164,13 @@ GopSetMode
   }
 
   if (RETURN_ERROR (Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: Blt configuration failed\n"));
+    Print(L"UsbGudFbDriver: Blt configuration failed\n");
     ASSERT (Status == RETURN_UNSUPPORTED);
     goto ErrorExit2;
   }
 
   GopInfo->PixelFormat = PixelBltOnly;
-  DEBUG((DEBUG_INFO, "UsbGudFbDriver: Blt configured\n"));
+  Print(L"UsbGudFbDriver: Blt configured\n");
 
   EFI_GRAPHICS_OUTPUT_BLT_PIXEL  Black;
   ZeroMem (&Black, sizeof (Black));
@@ -192,7 +192,7 @@ GopSetMode
   gBS->RestoreTPL(OldTpl);
   return Status;
 ErrorExit2:
-  FreePool(GudDev->FrameBufferBase);
+  FreePages(GudDev->FrameBufferBase, EFI_SIZE_TO_PAGES(GudDev->FrameBufferSize));
   GudDev->FrameBufferBase = NULL;
 
 ErrorExit:
@@ -216,7 +216,7 @@ GopBlt(
 	IN  UINTN                             Delta         OPTIONAL
 )
 {
-  DEBUG((DEBUG_INFO, "UsbGudFbDriver: GopBlt called\n"));
+  // Print(L"UsbGudFbDriver: GopBlt called\n");
   EFI_STATUS Status;
   USB_GUD_FB_DEV *GudDev = USB_GUD_FROM_GOP(This);
   EFI_TPL                      OldTpl;
@@ -240,7 +240,7 @@ GopBlt(
 #if 0
     Status = GudFlush(GudDev, DestinationX, DestinationY, Width, Height);
     if (EFI_ERROR(Status)) {
-      DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to flush buffer\n"));
+      Print(L"UsbGudFbDriver: failed to flush buffer\n");
       goto ErrorExit;
     }
 #else
@@ -308,11 +308,11 @@ UsbGudFbDriverBindingStart (
   Status = GudInit(GudDev);
 
   if (EFI_ERROR(Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to initialize\n"));
+    Print(L"UsbGudFbDriver: failed to initialize\n");
     goto ErrorExit1;
   }
 
-  DEBUG((DEBUG_INFO, "UsbGudFbDriver: initialized\n"));
+  Print(L"UsbGudFbDriver: initialized\n");
 
   //
   // Initialize Gop
@@ -330,7 +330,7 @@ UsbGudFbDriverBindingStart (
   Status = GopSetMode(&GudDev->Gop, 0);
 
   if (EFI_ERROR(Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to set mode\n"));
+    Print(L"UsbGudFbDriver: failed to set mode\n");
     goto ErrorExit2;
   }
 
@@ -352,7 +352,7 @@ UsbGudFbDriverBindingStart (
   );
 
   if (GudDev->GopDevicePath == NULL) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to append device path\n"));
+    Print(L"UsbGudFbDriver: failed to append device path\n");
     goto ErrorExit2;
   }
 
@@ -366,7 +366,7 @@ UsbGudFbDriverBindingStart (
   );
 
   if (EFI_ERROR(Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: install GOP failed\n"));
+    Print(L"UsbGudFbDriver: install GOP failed\n");
     goto ErrorExit3;
   }
 
@@ -386,7 +386,7 @@ UsbGudFbDriverBindingStart (
     goto ErrorExit3;
   }
 
-  DEBUG((DEBUG_INFO, "UsbGudFbDriver: GOP initialized\n"));
+  Print(L"UsbGudFbDriver: GOP initialized\n");
 
   //
   // Update ConOut UEFI variable
@@ -394,14 +394,14 @@ UsbGudFbDriverBindingStart (
   Status = EfiBootManagerUpdateConsoleVariable (ConOut, GudDev->GopDevicePath, NULL);
 
   if (EFI_ERROR (Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to update console variable\n"));
+    Print(L"UsbGudFbDriver: failed to update console variable\n");
     Status = EFI_SUCCESS;
   }
 
   Status = gBS->ConnectController (GudDev->GopHandle, NULL, NULL, TRUE);
 
   if (EFI_ERROR (Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to connect controller\n"));
+    Print(L"UsbGudFbDriver: failed to connect controller\n");
     Status = EFI_SUCCESS;
   }
 
@@ -411,7 +411,7 @@ UsbGudFbDriverBindingStart (
   Status = GudStartPolling(GudDev);
 
   if (EFI_ERROR (Status)) {
-    DEBUG((DEBUG_INFO, "UsbGudFbDriver: failed to start polling\n"));
+    Print(L"UsbGudFbDriver: failed to start polling\n");
     goto ErrorExit3;
   }
 
@@ -456,7 +456,7 @@ UsbGudFbDriverBindingSupported (
                   EFI_OPEN_PROTOCOL_BY_DRIVER
                   );
   if (EFI_ERROR (Status)) {
-    // DEBUG((DEBUG_INFO,"UsbGudFbDriverBindingSupported: failed to open USB I/O Protocol\n"));
+    // Print(L"UsbGudFbDriverBindingSupported: failed to open USB I/O Protocol\n");
     return Status;
   }
 
@@ -465,7 +465,7 @@ UsbGudFbDriverBindingSupported (
   //
   BOOLEAN IsGud = GudDetect(UsbIo);
   if (!IsGud) {
-    // DEBUG((DEBUG_INFO,"UsbGudFbDriverBindingSupported: GUD detection failed\n"));
+    // Print(L"UsbGudFbDriverBindingSupported: GUD detection failed\n");
     Status = EFI_UNSUPPORTED;
     goto Done;
   }
