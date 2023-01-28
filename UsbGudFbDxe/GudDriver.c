@@ -985,7 +985,7 @@ GudStartPolling(
   Status = gBS->SetTimer (
                   GudDev->PollingTimer,
                   TimerPeriodic,
-                  EFI_TIMER_PERIOD_MILLISECONDS (10000)
+                  EFI_TIMER_PERIOD_MILLISECONDS (100)
                   );
   if (EFI_ERROR (Status)) {
     return Status;
