@@ -23,7 +23,6 @@
 
 [LibraryClasses]
   BaseLib
-  ReportStatusCodeLib
   UefiLib
   UefiBootServicesTableLib
   UefiDriverEntryPoint
